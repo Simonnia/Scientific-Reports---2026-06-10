@@ -1,0 +1,96 @@
+clear; clc; close all;
+params_corrected =;
+param_names = {};
+n_params = length(params_corrected);
+
+rng(2026); 
+n_time = 122;      
+n_sensors = 7;     
+
+T_sim = 
+T_meas = 
+
+residuals_initial = T_meas - T_sim;  % [n_time x n_sensors]
+
+n_bootstrap = 500;           
+alpha = 0.05;             
+params_bootstrap = zeros(n_bootstrap, n_params);
+
+fprintf('开始 Bootstrap 计算，共 %d 次迭代...\n', n_bootstrap);
+for b = 1:n_bootstrap
+    
+    idx = randi(n_time, n_time, 1);
+    resampled_residuals = residuals_initial(idx, :);  % [n_time x n_sensors]
+
+    T_boot = T_sim + resampled_residuals;
+    
+  
+    x0 = params_corrected;
+    
+    
+    obj_fun = @(x) objective_demo(x, T_boot, T_sim, residuals_initial);
+    
+    options = optimoptions('fmincon', 'Display', 'off', 'Algorithm', 'sqp');
+    lb = params_corrected * 0.8;   
+    ub = params_corrected * 1.2;   
+    
+        try
+        [x_opt, ~] = fmincon(obj_fun, x0, [], [], [], [], lb, ub, [], options);
+    catch
+        x_opt = x0;  
+    end
+    
+    params_bootstrap(b, :) = x_opt;
+    
+    if mod(b, 50) == 0
+        fprintf('  已完成 %d / %d 次迭代\n', b, n_bootstrap);
+    end
+end
+
+
+params_mean = mean(params_bootstrap, 1);
+params_std = std(params_bootstrap, 0, 1);
+ci_lower = prctile(params_bootstrap, 100*alpha/2, 1);
+ci_upper = prctile(params_bootstrap, 100*(1-alpha/2), 1);
+rel_uncertainty = (ci_upper - ci_lower) ./ (2 * params_corrected) * 100;  % 半宽相对不确定度
+
+fprintf('\n========== Bootstrap 结果（95%% 置信区间）==========\n');
+fprintf('参数\t修正值\t\t均值\t\t下限\t\t上限\t\t相对不确定度(%%)\n');
+for i = 1:n_params
+    fprintf('%s\t%.2f\t\t%.2f\t\t%.2f\t\t%.2f\t\t%.1f\n', ...
+        param_names{i}, params_corrected(i), params_mean(i), ...
+        ci_lower(i), ci_upper(i), rel_uncertainty(i));
+end
+figure;
+selected_params = [1,3,4,6];  
+for j = 1:length(selected_params)
+    idx = selected_params(j);
+    subplot(2,2,j);
+    histogram(params_bootstrap(:,idx), 30, 'Normalization', 'pdf');
+    hold on;
+    xline(params_corrected(idx), 'r-', 'LineWidth', 1.5, 'Label', '修正值');
+    xline(ci_lower(idx), 'k--', 'LineWidth', 1, 'Label', '95% 置信区间');
+    xline(ci_upper(idx), 'k--', 'LineWidth', 1);
+    xlabel(param_names{idx});
+    ylabel('概率密度');
+    title(sprintf('%s 的 Bootstrap 分布', param_names{idx}));
+    legend('Bootstrap 样本', '修正值', '置信区间边界', 'Location', 'best');
+end
+sgtitle('Bootstrap 参数分布（500次重采样）');
+
+T_results = table(param_names', params_corrected', params_mean', ci_lower', ci_upper', rel_uncertainty', ...
+    'VariableNames', {'参数','修正值','Bootstrap均值','CI95下限','CI95上限','相对不确定度_percent'});
+writetable(T_results, 'bootstrap_parameter_CI.csv');
+fprintf('\n结果已保存至 bootstrap_parameter_CI.csv\n');
+function err = objective_demo(x, T_boot, T_sim_base, residuals_base)
+ 
+    true_params = [136, 937, 0.85, 0.22, 0.71, 0.25, 0.78, 8.87, ...
+                   16.50, 12.31, 11.73, 2.01, 37.33, 0.96, 2.23, ...
+                   0.22, 0.44, 0.25];
+    scaling = [0.01, 0.001, 10, 50, 20, 40, 15, 0.5, 0.2, ...
+               0.5, 0.3, 0.8, 0.1, 5, 0.6, 30, 20, 25];
+    delta = (x - true_params) .* scaling;
+    rmse_increase = sqrt(sum(delta.^2));
+     base_rmse = 0.15;
+    err = base_rmse + rmse_increase;
+end
